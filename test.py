@@ -7,6 +7,11 @@ class SnookerTableMerger:
         self.points_right = []
         self.current_points = []
         self.current_image = None
+        self.adjustment_mode = False
+        self.selected_camera = 0  # 0 = left, 1 = right
+        self.selected_point = 0
+        self.step_size = 1  # pixels to move per keypress
+        
         self.left_labels = [
             "Top-Left Corner",
             "Bottom-Left Corner",
@@ -147,6 +152,149 @@ class SnookerTableMerger:
         
         return result, H1, H2, output_width, output_height, left_width
 
+    def draw_adjustment_overlay(self, image, pts1, pts2):
+        """Draw adjustment overlay showing current points and selection"""
+        overlay = image.copy()
+        
+        # Draw current camera points
+        current_pts = pts1 if self.selected_camera == 0 else pts2
+        current_labels = self.left_labels if self.selected_camera == 0 else self.right_labels
+        
+        for i, (point, label) in enumerate(zip(current_pts, current_labels)):
+            x, y = int(point[0]), int(point[1])
+            
+            # Highlight selected point
+            if i == self.selected_point:
+                cv2.circle(overlay, (x, y), 10, (0, 255, 255), 3)  # Yellow circle for selected
+                cv2.putText(overlay, f"SELECTED: {label}", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            else:
+                cv2.circle(overlay, (x, y), 7, (0, 255, 0), 2)  # Green for others
+            
+            # Point number
+            cv2.putText(overlay, str(i+1), (x+15, y-10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Instructions
+        camera_name = "LEFT" if self.selected_camera == 0 else "RIGHT"
+        instructions = [
+            f"Camera: {camera_name} | Point: {self.selected_point+1}/{len(current_pts)}",
+            "Arrow Keys: Move point | Tab: Next point | Space: Switch camera",
+            f"1-5: Step size ({self.step_size}px) | Enter: Done | ESC: Cancel"
+        ]
+        
+        for i, instruction in enumerate(instructions):
+            cv2.putText(overlay, instruction, (10, image.shape[0] - 60 + i*20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        return overlay
+
+    def live_adjustment_mode(self, cam1, cam2, pts1, pts2):
+        """Live adjustment mode for fine-tuning points"""
+        print("\n" + "="*60)
+        print("LIVE ADJUSTMENT MODE")
+        print("="*60)
+        print("Controls:")
+        print("  Arrow Keys: Move selected point")
+        print("  Tab: Select next point")
+        print("  Space: Switch between cameras")
+        print("  1-5: Change step size (1, 2, 5, 10, 20 pixels)")
+        print("  Enter: Apply changes and continue")
+        print("  ESC: Cancel changes")
+        print("="*60)
+        
+        # Create working copies
+        adj_pts1 = pts1.copy()
+        adj_pts2 = pts2.copy()
+        
+        self.selected_camera = 0
+        self.selected_point = 0
+        self.step_size = 1
+        
+        while True:
+            ret1, frame1 = cam1.read()
+            ret2, frame2 = cam2.read()
+            
+            if not ret1 or not ret2:
+                print("Error reading from cameras.")
+                return None, None
+            
+            # Create merged image with current points
+            try:
+                merged, _, _, _, _, _ = self.create_merged_image(frame1, frame2, adj_pts1, adj_pts2)
+                
+                # Draw overlay on the frame being adjusted
+                if self.selected_camera == 0:
+                    frame_with_overlay = self.draw_adjustment_overlay(frame1, adj_pts1, adj_pts2)
+                    cv2.imshow("Camera View (Adjusting)", frame_with_overlay)
+                else:
+                    frame_with_overlay = self.draw_adjustment_overlay(frame2, adj_pts1, adj_pts2)
+                    cv2.imshow("Camera View (Adjusting)", frame_with_overlay)
+                
+                cv2.imshow("Live Merge Preview", merged)
+                
+            except Exception as e:
+                print(f"Error creating merge preview: {e}")
+                continue
+            
+            key = cv2.waitKey(1) & 0xFF
+            
+            # Get current points array
+            current_pts = adj_pts1 if self.selected_camera == 0 else adj_pts2
+            
+            # Arrow key controls
+            if key == 81 or key == 0:  # Left arrow (may vary by system)
+                current_pts[self.selected_point][0] -= self.step_size
+            elif key == 83 or key == 1:  # Right arrow  
+                current_pts[self.selected_point][0] += self.step_size
+            elif key == 82 or key == 2:  # Up arrow
+                current_pts[self.selected_point][1] -= self.step_size
+            elif key == 84 or key == 3:  # Down arrow
+                current_pts[self.selected_point][1] += self.step_size
+            
+            # Alternative WASD controls
+            elif key == ord('w'):  # Up
+                current_pts[self.selected_point][1] -= self.step_size
+            elif key == ord('s'):  # Down
+                current_pts[self.selected_point][1] += self.step_size
+            elif key == ord('a'):  # Left
+                current_pts[self.selected_point][0] -= self.step_size
+            elif key == ord('d'):  # Right
+                current_pts[self.selected_point][0] += self.step_size
+            
+            # Tab - next point
+            elif key == 9:  # Tab
+                self.selected_point = (self.selected_point + 1) % len(current_pts)
+            
+            # Space - switch camera
+            elif key == 32:  # Space
+                self.selected_camera = 1 - self.selected_camera
+                self.selected_point = 0  # Reset to first point
+            
+            # Number keys for step size
+            elif key == ord('1'):
+                self.step_size = 1
+            elif key == ord('2'):
+                self.step_size = 2
+            elif key == ord('3'):
+                self.step_size = 5
+            elif key == ord('4'):
+                self.step_size = 10
+            elif key == ord('5'):
+                self.step_size = 20
+            
+            # Enter - apply changes
+            elif key == 13:  # Enter
+                cv2.destroyWindow("Camera View (Adjusting)")
+                cv2.destroyWindow("Live Merge Preview")
+                return adj_pts1, adj_pts2
+            
+            # ESC - cancel
+            elif key == 27:  # ESC
+                cv2.destroyWindow("Camera View (Adjusting)")
+                cv2.destroyWindow("Live Merge Preview")
+                return pts1, pts2  # Return original points
+
 def main():
     merger = SnookerTableMerger()
     
@@ -195,20 +343,30 @@ def main():
     test_merge, H1, H2, output_width, output_height, left_width = merger.create_merged_image(frame1, frame2, pts1, pts2)
     
     cv2.imshow("Test Merge", test_merge)
-    print("Test merge created. Press any key to start live feed, or ESC to exit.")
+    print("Test merge created.")
+    print("Press 'a' for adjustment mode, any other key for live feed, or ESC to exit.")
     
     key = cv2.waitKey(0)
+    cv2.destroyWindow("Test Merge")
+    
     if key == 27:  # ESC
         cv2.destroyAllWindows()
         cam1.release()
         cam2.release()
         return
-    
-    cv2.destroyWindow("Test Merge")
+    elif key == ord('a'):  # Adjustment mode
+        adjusted_pts1, adjusted_pts2 = merger.live_adjustment_mode(cam1, cam2, pts1, pts2)
+        if adjusted_pts1 is not None:
+            pts1, pts2 = adjusted_pts1, adjusted_pts2
+            # Recreate transforms with adjusted points
+            test_merge, H1, H2, output_width, output_height, left_width = merger.create_merged_image(frame1, frame2, pts1, pts2)
+            print("Points adjusted! Starting live feed...")
+        else:
+            print("Adjustment cancelled, using original points.")
     
     # Live merging
     print("\n" + "="*50)
-    print("LIVE MERGE - Press 'q' to quit")
+    print("LIVE MERGE - Press 'q' to quit, 'a' to adjust again")
     print("="*50)
     
     while True:
@@ -240,8 +398,32 @@ def main():
         
         cv2.imshow("Snooker Table Merge", merged)
         
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('a'):  # Re-enter adjustment mode
+            print("\nRe-entering adjustment mode...")
+            cv2.destroyWindow("Snooker Table Merge")
+            adjusted_pts1, adjusted_pts2 = merger.live_adjustment_mode(cam1, cam2, pts1, pts2)
+            if adjusted_pts1 is not None:
+                pts1, pts2 = adjusted_pts1, adjusted_pts2
+                # Recreate transforms
+                ret1, frame1 = cam1.read()
+                ret2, frame2 = cam2.read()
+                if ret1 and ret2:
+                    _, H1, H2, output_width, output_height, left_width = merger.create_merged_image(frame1, frame2, pts1, pts2)
+                    print("Points re-adjusted! Continuing live feed...")
+            print("Press 'q' to quit, 'a' to adjust again")
+    
+    # Adjustment mode
+    adj_pts1, adj_pts2 = merger.live_adjustment_mode(cam1, cam2, pts1, pts2)
+    
+    # Final merge with adjusted points
+    print("\nCreating final merge with adjusted points...")
+    final_merge, _, _, _, _, _ = merger.create_merged_image(frame1, frame2, adj_pts1, adj_pts2)
+    
+    cv2.imshow("Final Merge", final_merge)
+    cv2.waitKey(0)
     
     # Cleanup
     cam1.release()
