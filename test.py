@@ -7,11 +7,16 @@ class SnookerTableMerger:
         self.points_right = []
         self.current_points = []
         self.current_image = None
-        self.point_labels = [
+        self.left_labels = [
             "Top-Left Corner",
-            "Top-Right Corner", 
             "Bottom-Left Corner",
-            "Bottom-Right Corner",
+            "Top Middle Pocket", 
+            "Bottom Middle Pocket"
+        ]
+        
+        self.right_labels = [
+            "Top-Right Corner",
+            "Bottom-Right Corner", 
             "Top Middle Pocket",
             "Bottom Middle Pocket"
         ]
@@ -23,32 +28,35 @@ class SnookerTableMerger:
             
             # Add label text
             label_idx = len(self.current_points) - 1
-            if label_idx < len(self.point_labels):
-                cv2.putText(self.current_image, f"{label_idx+1}", 
-                           (x+10, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(self.current_image, f"{label_idx+1}", 
+                       (x+10, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             cv2.imshow("Click Points", self.current_image)
-            print(f"Point {len(self.current_points)}: {self.point_labels[label_idx] if label_idx < len(self.point_labels) else 'Unknown'}")
+            if label_idx < 4:
+                print(f"Point {len(self.current_points)} clicked at ({x}, {y})")
 
     def collect_points(self, image, camera_name):
         self.current_points = []
         self.current_image = image.copy()
         
+        # Choose the right labels based on camera
+        labels = self.left_labels if "LEFT" in camera_name else self.right_labels
+        
         print(f"\n=== {camera_name} ===")
         print("Click the following points in order:")
-        for i, label in enumerate(self.point_labels):
+        for i, label in enumerate(labels):
             print(f"{i+1}. {label}")
         print("Press SPACE when done, ESC to cancel")
         
         cv2.imshow("Click Points", self.current_image)
         cv2.setMouseCallback("Click Points", self.mouse_callback)
         
-        while len(self.current_points) < 6:
+        while len(self.current_points) < 4:
             key = cv2.waitKey(1) & 0xFF
             if key == 27:  # ESC
                 cv2.destroyAllWindows()
                 return None
-            elif key == 32 and len(self.current_points) == 6:  # SPACE
+            elif key == 32 and len(self.current_points) == 4:  # SPACE
                 break
                 
         cv2.destroyWindow("Click Points")
@@ -74,29 +82,27 @@ class SnookerTableMerger:
     def create_merged_image(self, img1, img2, pts1, pts2, output_width=1600, output_height=400):
         """Create the merged snooker table image"""
         
-        # Create target points for left half (0 to middle)
+        # Left camera sees: Top-Left Corner, Bottom-Left Corner, Top Middle Pocket, Bottom Middle Pocket
+        # Map to left half of output: (0,0) to (width/2, height)
         left_target = np.array([
-            [0, 0],                    # Top-left
-            [output_width//2, 0],      # Top-middle 
-            [0, output_height],        # Bottom-left
-            [output_width//2, output_height], # Bottom-middle
-            [output_width//2, 0],      # Top middle pocket
-            [output_width//2, output_height]  # Bottom middle pocket
+            [0, 0],                        # Top-Left Corner → Top-Left of output
+            [0, output_height],            # Bottom-Left Corner → Bottom-Left of output  
+            [output_width//2, 0],          # Top Middle Pocket → Top-Middle of output
+            [output_width//2, output_height]  # Bottom Middle Pocket → Bottom-Middle of output
         ], dtype=np.float32)
         
-        # Create target points for right half (middle to end)
+        # Right camera sees: Top-Right Corner, Bottom-Right Corner, Top Middle Pocket, Bottom Middle Pocket  
+        # Map to right half of output: (width/2, 0) to (width, height)
         right_target = np.array([
-            [output_width//2, 0],      # Top-middle (maps to top-left of right camera)
-            [output_width, 0],         # Top-right
-            [output_width//2, output_height], # Bottom-middle (maps to bottom-left of right camera)  
-            [output_width, output_height],    # Bottom-right
-            [output_width//2, 0],      # Top middle pocket
-            [output_width//2, output_height]  # Bottom middle pocket
+            [output_width, 0],             # Top-Right Corner → Top-Right of output
+            [output_width, output_height], # Bottom-Right Corner → Bottom-Right of output
+            [output_width//2, 0],          # Top Middle Pocket → Top-Middle of output  
+            [output_width//2, output_height]  # Bottom Middle Pocket → Bottom-Middle of output
         ], dtype=np.float32)
         
         # Create perspective transforms
-        H1 = cv2.getPerspectiveTransform(pts1[:4], left_target[:4])
-        H2 = cv2.getPerspectiveTransform(pts2[:4], right_target[:4])
+        H1 = cv2.getPerspectiveTransform(pts1, left_target)
+        H2 = cv2.getPerspectiveTransform(pts2, right_target)
         
         # Warp both images
         warped1 = cv2.warpPerspective(img1, H1, (output_width, output_height))
