@@ -79,25 +79,48 @@ class SnookerTableMerger:
         dst_corners = dst_points[:4]
         return cv2.getPerspectiveTransform(src_corners, dst_corners)
 
-    def create_merged_image(self, img1, img2, pts1, pts2, output_width=1600, output_height=400):
-        """Create the merged snooker table image"""
+    def calculate_output_dimensions(self, pts1, pts2, img1_shape, img2_shape):
+        """Calculate proper output dimensions based on table coverage in each camera"""
         
-        # Left camera sees: Top-Left Corner, Bottom-Left Corner, Top Middle Pocket, Bottom Middle Pocket
-        # Map to left half of output: (0,0) to (width/2, height)
+        # For left camera: distance from left corner to middle pocket
+        left_width = abs(pts1[2][0] - pts1[0][0])  # Top middle pocket X - Top left corner X
+        
+        # For right camera: distance from middle pocket to right corner  
+        right_width = abs(pts2[0][0] - pts2[2][0])  # Top right corner X - Top middle pocket X
+        
+        # Height should be consistent - use the larger of the two
+        left_height = abs(pts1[1][1] - pts1[0][1])  # Bottom left - Top left
+        right_height = abs(pts2[1][1] - pts2[0][1])  # Bottom right - Top right
+        
+        output_height = max(left_height, right_height)
+        output_width = left_width + right_width
+        
+        return int(output_width), int(output_height), int(left_width), int(right_width)
+
+    def create_merged_image(self, img1, img2, pts1, pts2):
+        """Create the merged snooker table image with proper aspect ratio"""
+        
+        # Calculate proper dimensions
+        output_width, output_height, left_width, right_width = self.calculate_output_dimensions(
+            pts1, pts2, img1.shape, img2.shape)
+        
+        print(f"Calculated output dimensions: {output_width}x{output_height}")
+        print(f"Left section: {left_width}px, Right section: {right_width}px")
+        
+        # Left camera maps to left portion
         left_target = np.array([
-            [0, 0],                        # Top-Left Corner → Top-Left of output
-            [0, output_height],            # Bottom-Left Corner → Bottom-Left of output  
-            [output_width//2, 0],          # Top Middle Pocket → Top-Middle of output
-            [output_width//2, output_height]  # Bottom Middle Pocket → Bottom-Middle of output
+            [0, 0],                    # Top-Left Corner → Top-Left of output
+            [0, output_height],        # Bottom-Left Corner → Bottom-Left of output  
+            [left_width, 0],           # Top Middle Pocket → Top at left_width
+            [left_width, output_height]  # Bottom Middle Pocket → Bottom at left_width
         ], dtype=np.float32)
         
-        # Right camera sees: Top-Right Corner, Bottom-Right Corner, Top Middle Pocket, Bottom Middle Pocket  
-        # Map to right half of output: (width/2, 0) to (width, height)
+        # Right camera maps to right portion
         right_target = np.array([
-            [output_width, 0],             # Top-Right Corner → Top-Right of output
+            [output_width, 0],         # Top-Right Corner → Top-Right of output
             [output_width, output_height], # Bottom-Right Corner → Bottom-Right of output
-            [output_width//2, 0],          # Top Middle Pocket → Top-Middle of output  
-            [output_width//2, output_height]  # Bottom Middle Pocket → Bottom-Middle of output
+            [left_width, 0],           # Top Middle Pocket → Top at left_width (same as left camera)
+            [left_width, output_height]  # Bottom Middle Pocket → Bottom at left_width
         ], dtype=np.float32)
         
         # Create perspective transforms
@@ -108,12 +131,12 @@ class SnookerTableMerger:
         warped1 = cv2.warpPerspective(img1, H1, (output_width, output_height))
         warped2 = cv2.warpPerspective(img2, H2, (output_width, output_height))
         
-        # Create masks for left and right halves
+        # Create masks for left and right portions
         mask_left = np.zeros((output_height, output_width), dtype=np.uint8)
         mask_right = np.zeros((output_height, output_width), dtype=np.uint8)
         
-        mask_left[:, :output_width//2] = 255
-        mask_right[:, output_width//2:] = 255
+        mask_left[:, :left_width] = 255
+        mask_right[:, left_width:] = 255
         
         # Apply masks
         left_masked = cv2.bitwise_and(warped1, warped1, mask=mask_left)
@@ -122,7 +145,7 @@ class SnookerTableMerger:
         # Combine the images
         result = cv2.add(left_masked, right_masked)
         
-        return result, H1, H2
+        return result, H1, H2, output_width, output_height, left_width
 
 def main():
     merger = SnookerTableMerger()
@@ -169,7 +192,7 @@ def main():
     
     # Create initial merged image to test
     print("\nCreating test merge...")
-    test_merge, H1, H2 = merger.create_merged_image(frame1, frame2, pts1, pts2)
+    test_merge, H1, H2, output_width, output_height, left_width = merger.create_merged_image(frame1, frame2, pts1, pts2)
     
     cv2.imshow("Test Merge", test_merge)
     print("Test merge created. Press any key to start live feed, or ESC to exit.")
@@ -188,9 +211,6 @@ def main():
     print("LIVE MERGE - Press 'q' to quit")
     print("="*50)
     
-    output_width = 1600
-    output_height = 400
-    
     while True:
         ret1, frame1 = cam1.read()
         ret2, frame2 = cam2.read()
@@ -207,8 +227,8 @@ def main():
         mask_left = np.zeros((output_height, output_width), dtype=np.uint8)
         mask_right = np.zeros((output_height, output_width), dtype=np.uint8)
         
-        mask_left[:, :output_width//2] = 255
-        mask_right[:, output_width//2:] = 255
+        mask_left[:, :left_width] = 255
+        mask_right[:, left_width:] = 255
         
         left_masked = cv2.bitwise_and(warped1, warped1, mask=mask_left)
         right_masked = cv2.bitwise_and(warped2, warped2, mask=mask_right)
@@ -216,7 +236,7 @@ def main():
         merged = cv2.add(left_masked, right_masked)
         
         # Draw center line for reference
-        cv2.line(merged, (output_width//2, 0), (output_width//2, output_height), (0, 255, 255), 2)
+        cv2.line(merged, (left_width, 0), (left_width, output_height), (0, 255, 255), 2)
         
         cv2.imshow("Snooker Table Merge", merged)
         
