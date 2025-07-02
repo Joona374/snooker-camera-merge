@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import time
 
 def click_points(event, x, y, flags, params):
     """Mouse callback to capture points on an image."""
@@ -20,6 +21,8 @@ def collect_points(img, prompt):
         cv2.waitKey(1)
     cv2.destroyWindow("Image")
     return np.array(points, dtype=np.float32)
+
+time.sleep(3)
 
 # Load your two images
 img1 = cv2.imread("left_cam.jpg")
