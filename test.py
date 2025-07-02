@@ -24,6 +24,9 @@ def collect_points(img, prompt):
 # Load your two images
 img1 = cv2.imread("left_cam.jpg")
 img2 = cv2.imread("right_cam.jpg")
+if not img2 or img1:
+    print(f"Images not there yet")
+
 
 # Step 1: Collect corresponding points
 pts1 = collect_points(img1, "Left Camera (Top-Left, Top-Middle, Bottom-Left, Bottom-Middle)")
